@@ -27,7 +27,7 @@ namespace LAY.Pingline
         {
         }
 
-        public PinglineResult Process(Mat image, bool drawResult = true)
+        public PinglineResult Process(Mat image, bool drawResult = true, double micronScale = 1.0)
         {
             if (image == null || image.Empty())
             {
@@ -105,7 +105,7 @@ namespace LAY.Pingline
 
             if (drawResult)
             {
-                Draw(output, selected.Box, roiRect, measurement.Value);
+                Draw(output, selected.Box, roiRect, measurement.Value, micronScale);
             }
 
             return PinglineResult.Success(output, selected.Box, roiRect, measurement.Value, selected);
@@ -278,7 +278,13 @@ namespace LAY.Pingline
 
             return largest;
         }
-
+        /// <summary>
+        /// 竖线长度
+        /// </summary>
+        /// <param name="mask"></param>
+        /// <param name="roiRect"></param>
+        /// <param name="offset"></param>
+        /// <returns></returns>
         private static Measurement? Measure(Mat mask, Rect roiRect, int offset)
         {
             using Mat points = new Mat();
@@ -294,8 +300,8 @@ namespace LAY.Pingline
                 return null;
             }
 
-            int localX1 = ClampToInt(bounds.Left + bounds.Width * 0.25, 0, mask.Width - 1);
-            int localX2 = ClampToInt(bounds.Left + bounds.Width * 0.75, 0, mask.Width - 1);
+            int localX1 = ClampToInt(bounds.Left + bounds.Width * 0.1, 0, mask.Width - 1);
+            int localX2 = ClampToInt(bounds.Left + bounds.Width * 0.85, 0, mask.Width - 1);
 
             LineMeasure? left = GetHeight(mask, localX1, roiRect, offset);
             LineMeasure? right = GetHeight(mask, localX2, roiRect, offset);
@@ -348,14 +354,14 @@ namespace LAY.Pingline
             return lineMeasure;
         }
 
-        private static void Draw(Mat image, Rect selectedBox, Rect roiRect, Measurement measurement)
+        private static void Draw(Mat image, Rect selectedBox, Rect roiRect, Measurement measurement, double micronScale)
         {
-            DrawLineMeasure(image, measurement.Left, "H1");
-            DrawLineMeasure(image, measurement.Right, "H2");
-            DrawSummaryText(image, measurement);
+            DrawLineMeasure(image, measurement.Left, "H1", micronScale);
+            DrawLineMeasure(image, measurement.Right, "H2", micronScale);
+            DrawSummaryText(image, measurement, micronScale);
         }
 
-        private static void DrawSummaryText(Mat image, Measurement measurement)
+        private static void DrawSummaryText(Mat image, Measurement measurement, double micronScale)
         {
             Scalar green = new Scalar(0, 255, 0);
             double fontScale = 3.0;
@@ -363,12 +369,12 @@ namespace LAY.Pingline
             int x = 20;
             int y = 20;
             int baseline;
-            Size textSize = Cv2.GetTextSize("LR:0000px", HersheyFonts.HersheySimplex, fontScale, thickness, out baseline);
+            Size textSize = Cv2.GetTextSize("LR:0000um", HersheyFonts.HersheySimplex, fontScale, thickness, out baseline);
             int lineGap = textSize.Height + baseline + 16;
 
             Cv2.PutText(
                 image,
-                $"LF:{measurement.Left.Height}px",
+                "LF:" + FormatMicronValue(measurement.Left.Height, micronScale) + "um",
                 new Point(x, y + textSize.Height),
                 HersheyFonts.HersheySimplex,
                 fontScale,
@@ -377,7 +383,7 @@ namespace LAY.Pingline
             );
             Cv2.PutText(
                 image,
-                $"LR:{measurement.Right.Height}px",
+                "LR:" + FormatMicronValue(measurement.Right.Height, micronScale) + "um",
                 new Point(x, y + textSize.Height + lineGap),
                 HersheyFonts.HersheySimplex,
                 fontScale,
@@ -385,14 +391,19 @@ namespace LAY.Pingline
                 thickness
             );
         }
-
-        private static void DrawLineMeasure(Mat image, LineMeasure line, string label)
+        /// <summary>
+        /// 画竖线和写字
+        /// </summary>
+        /// <param name="image"></param>
+        /// <param name="line"></param>
+        /// <param name="label"></param>
+        private static void DrawLineMeasure(Mat image, LineMeasure line, string label, double micronScale)
         {
             Point p1 = new Point(line.X, line.Y1);
             Point p2 = new Point(line.X, line.Y2);
 
             Scalar green = new Scalar(0, 255, 0);
-            string text = $"{label}={line.Height}px";
+            string text = label + "=" + FormatMicronValue(line.Height, micronScale) + "um";
             int baseline;
             Size textSize = Cv2.GetTextSize(text, HersheyFonts.HersheySimplex, 0.6, 2, out baseline);
             int textX = Math.Max(0, Math.Min(image.Width - textSize.Width, line.X - textSize.Width / 2));
@@ -400,16 +411,23 @@ namespace LAY.Pingline
 
             Cv2.Line(image, p1, p2, green, 2);
             
-            Cv2.PutText(
-                image,
-                text,
-                new Point(textX, textY),
-                HersheyFonts.HersheySimplex,
-                0.6,
-                green,
-                2
-            );
+            //Cv2.PutText(
+            //    image,
+            //    text,
+            //    new Point(textX, textY),
+            //    HersheyFonts.HersheySimplex,
+            //    4,
+            //    green,
+            //    4
+            //);
         }
+
+        private static string FormatMicronValue(int pixelValue, double micronScale)
+        {
+            double micronValue = pixelValue * micronScale;
+            return micronValue.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         private static Rect NormalizeRect(int x1, int y1, int x2, int y2)
         {
             int left = Math.Min(x1, x2);

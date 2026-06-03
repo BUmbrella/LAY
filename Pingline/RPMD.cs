@@ -25,8 +25,9 @@ namespace LAY.Pingline
         {
             bool preferGpu = true;
 
-            string yoloOnnx = Path.Combine(AppContext.BaseDirectory, "onnx", "yolov8", "best_ROI.onnx");
-            string unetOnnx = Path.Combine(AppContext.BaseDirectory, "onnx", "yolov8", "best_epoch_weights.onnx");
+            string yoloOnnx = Path.Combine(AppContext.BaseDirectory, "onnx", "yolo", "best_ROI.onnx");
+            
+            string unetOnnx = Path.Combine(AppContext.BaseDirectory, "onnx", "unet", "best_epoch_weights.onnx");
 
             _pipeline = new PipelineService(yoloOnnx, unetOnnx, preferGpu);
         }

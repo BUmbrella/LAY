@@ -32,7 +32,7 @@ namespace YOLOv8
             string yoloModelPath = Path.Combine(
                 AppContext.BaseDirectory,
                 "onnx",
-                "yolov8",
+                "yolo",
                 "best.onnx"
             );
 

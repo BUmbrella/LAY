@@ -222,6 +222,12 @@ namespace LAY.ViewModels
         // 一般是用户拖入文件夹后，窗口代码把文件夹路径传进来。
         public void LoadFolder(string folderPath)
         {
+            if (!sysmain.TryGetMagnificationFromFolderName(folderPath, out _))
+            {
+                ShowPrompt("请修改文件夹名字，提供放大倍数");
+                return;
+            }
+
             _sourceFolderPath = folderPath;
             LoadPhotos(folderPath, folderPath);
             Log("已加载输入文件夹：" + folderPath);
@@ -474,7 +480,12 @@ namespace LAY.ViewModels
         // 前面加当前时间，方便看每一步检测发生的先后顺序。
         private void AddLog(string message)
         {
-            Logs.Add(DateTime.Now.ToString("HH:mm:ss") + "  " + message);
+            Logs.Insert(0, DateTime.Now.ToString("HH:mm:ss") + "  " + message);
+
+            while (Logs.Count > 200)
+            {
+                Logs.RemoveAt(Logs.Count - 1);
+            }
         }
 
         // 统一弹出提示框。

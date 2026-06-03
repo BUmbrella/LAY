@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.16.3" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.26.0" />
     <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260531" />
     <PackageReference Include="OpenCvSharp4.Extensions" Version="4.13.0.20260531" />
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260531" />
@@ -20,7 +20,7 @@
   <ItemGroup>
     <None Remove="Resource\APS.png" />
     <Reference Include="LAY.Project">
-      <HintPath>bin\x64\Debug\net8.0-windows\LAY.Project.dll</HintPath>
+      <HintPath>bin\Debug\net8.0-windows\onnx\LAY.Project.dll</HintPath>
     </Reference>
     <Resource Include="Resource\APS.png" />
   </ItemGroup>

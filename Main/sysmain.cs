@@ -39,12 +39,20 @@ namespace LAY.Main
             {
                 throw new DirectoryNotFoundException("Input folder not found: " + inputFolderPath);
             }
-
+            //读取倍数设置文件
+            string magnification = GetMagnificationFromFolderName(inputFolderPath);
+            double micronScale = ReadMicronScale(magnification, log);
             string resultFolderPath = Path.Combine(inputFolderPath, "Result");
             Directory.CreateDirectory(resultFolderPath);
 
-            string xlsxPath = Path.Combine(resultFolderPath, "measure_results.xlsx");
-            List<MeasureRecord> records = new List<MeasureRecord>();
+            string bXlsxPath = Path.Combine(resultFolderPath, "BLT_measure_results.xlsx");
+            string rXlsxPath = Path.Combine(resultFolderPath, "R_measure_results.xlsx");
+            DeleteExistingResultFile(Path.Combine(resultFolderPath, "measure_results.xlsx"));
+            DeleteExistingResultFile(bXlsxPath);
+            DeleteExistingResultFile(rXlsxPath);
+
+            List<MeasureRecord> bRecords = new List<MeasureRecord>();
+            List<MeasureRecord> rRecords = new List<MeasureRecord>();
             string[] imagePaths = GetImagePaths(inputFolderPath);
 
             foreach (string imagePath in imagePaths)
@@ -55,16 +63,36 @@ namespace LAY.Main
                     break;
                 }
 
-                ProcessOneImage(imagePath, resultFolderPath, records, log);
+                ProcessOneImage(imagePath, resultFolderPath, bRecords, rRecords, micronScale, log);
             }
 
-            WriteXlsx(xlsxPath, records);
+            List<string> xlsxPaths = new List<string>();
+            if (bRecords.Count > 0)
+            {
+                WriteXlsx(bXlsxPath, bRecords, XlsxSheetType.Blt);
+                xlsxPaths.Add(bXlsxPath);
+            }
+
+            if (rRecords.Count > 0)
+            {
+                WriteXlsx(rXlsxPath, rRecords, XlsxSheetType.R);
+                xlsxPaths.Add(rXlsxPath);
+            }
 
             SysmainProcessResult result = new SysmainProcessResult();
             result.ResultFolderPath = resultFolderPath;
-            result.XlsxPath = xlsxPath;
-            result.Records = records;
+            result.XlsxPath = string.Join("; ", xlsxPaths);
+            result.XlsxPaths = xlsxPaths;
+            result.Records = bRecords.Concat(rRecords).ToList();
             return result;
+        }
+
+        private static void DeleteExistingResultFile(string filePath)
+        {
+            if (File.Exists(filePath))
+            {
+                File.Delete(filePath);
+            }
         }
 
         private static string[] GetImagePaths(string inputFolderPath)
@@ -89,7 +117,118 @@ namespace LAY.Main
             return imagePaths.ToArray();
         }
 
-        private static void ProcessOneImage(string imagePath, string resultFolderPath, List<MeasureRecord> records, Action<string>? log)
+        public static bool TryGetMagnificationFromFolderName(string folderPath, out string magnification)
+        {
+            magnification = GetTrailingDigits(new DirectoryInfo(folderPath).Name);
+            return magnification.Length > 0;
+        }
+
+        private static string GetMagnificationFromFolderName(string inputFolderPath)
+        {
+            if (TryGetMagnificationFromFolderName(inputFolderPath, out string magnification))
+            {
+                return magnification;
+            }
+
+            throw new InvalidOperationException("请修改文件夹名字，提供放大倍数");
+        }
+
+        private static string GetTrailingDigits(string text)
+        {
+            int end = text.Length - 1;
+            while (end >= 0 && char.IsWhiteSpace(text[end]))
+            {
+                end--;
+            }
+
+            int start = end;
+            while (start >= 0 && char.IsDigit(text[start]))
+            {
+                start--;
+            }
+
+            if (start == end)
+            {
+                return string.Empty;
+            }
+
+            return text.Substring(start + 1, end - start);
+        }
+
+        private static double ReadMicronScale(string magnification, Action<string>? log)
+        {
+            string setPath = Path.Combine(AppContext.BaseDirectory, "set.txt");
+
+            if (!File.Exists(setPath))
+            {
+                throw new FileNotFoundException("set.txt not found: " + setPath, setPath);
+            }
+
+            string[] lines = File.ReadAllLines(setPath, Encoding.UTF8);
+            foreach (string line in lines)
+            {
+                string text = line.Trim();
+                if (text.Length == 0 || text.StartsWith("#"))
+                {
+                    continue;
+                }
+
+                string[] parts = SplitSettingLine(text);
+                if (parts.Length != 2)
+                {
+                    continue;
+                }
+
+                string key = parts[0].Trim();
+                string valueText = parts[1].Trim();
+                if (!string.Equals(key, magnification, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (TryParseDouble(valueText, out double scale))
+                {
+                    WriteLog(log, "Magnification " + magnification + " micron scale: " + scale.ToString("0.######", CultureInfo.InvariantCulture));
+                    return scale;
+                }
+
+                throw new InvalidOperationException("set.txt 参数格式错误: " + text);
+            }
+
+            throw new InvalidOperationException("set.txt 中没有找到放大倍数 " + magnification + " 对应的参数");
+        }
+
+        private static string[] SplitSettingLine(string text)
+        {
+            int separatorIndex = text.IndexOf(':');
+            if (separatorIndex < 0)
+            {
+                separatorIndex = text.IndexOf('\uFF1A');
+            }
+
+            if (separatorIndex < 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            return new[]
+            {
+                text.Substring(0, separatorIndex),
+                text.Substring(separatorIndex + 1)
+            };
+        }
+
+        private static bool TryParseDouble(string text, out double value)
+        {
+            if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+            {
+                return true;
+            }
+
+            return double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out value);
+        }
+
+        private static void ProcessOneImage(string imagePath, string resultFolderPath, List<MeasureRecord> bRecords, List<MeasureRecord> rRecords, double micronScale, Action<string>? log)
         {
             string fileName = Path.GetFileName(imagePath);
             FileNameInfo fileNameInfo = ParseFileName(fileName);
@@ -107,12 +246,12 @@ namespace LAY.Main
                 using Mat cleanImage = RemoveColorText(image);
 
                 if (string.Equals(fileNameInfo.PipelineCode, "R", StringComparison.OrdinalIgnoreCase))
-                {
-                    ProcessRImage(cleanImage, fileName, fileNameInfo, resultImagePath, records, log);
+                {//R
+                    ProcessRImage(cleanImage, image, fileName, fileNameInfo, resultImagePath, rRecords, micronScale, log);
                 }
                 else
-                {
-                    ProcessBImage(cleanImage, fileName, fileNameInfo, resultImagePath, records, log);
+                {//B
+                    ProcessBImage(cleanImage, image, fileName, fileNameInfo, resultImagePath, bRecords, micronScale, log);
                 }
             }
         }
@@ -196,18 +335,18 @@ namespace LAY.Main
             return mask;
         }
 
-        private static void ProcessBImage(Mat image, string fileName, FileNameInfo fileNameInfo, string resultImagePath, List<MeasureRecord> records, Action<string>? log)
+        private static void ProcessBImage(Mat image, Mat originalImage, string fileName, FileNameInfo fileNameInfo, string resultImagePath, List<MeasureRecord> records, double micronScale, Action<string>? log)
         {
-            PinglineResult result = BLT.Instance.Process(image);
+            PinglineResult result = BLT.Instance.Process(image, true, micronScale);
 
-            using (Mat output = GetBOutputImage(image, result))
+            using (Mat output = GetBOutputImage(originalImage, image, result))
             {
                 Cv2.ImWrite(resultImagePath, output);
             }
 
             if (result.IsSuccess && result.Measurement.HasValue)
             {
-                MeasureRecord record = MeasureRecord.CreateFromB(fileNameInfo, result.Measurement.Value);
+                MeasureRecord record = MeasureRecord.CreateFromB(fileNameInfo, result.Measurement.Value, micronScale);
                 records.Add(record);
                 WriteLog(log, fileName + " -> B OK");
                 return;
@@ -216,11 +355,11 @@ namespace LAY.Main
             WriteLog(log, fileName + " -> " + result.Message);
         }
 
-        private static void ProcessRImage(Mat image, string fileName, FileNameInfo fileNameInfo, string resultImagePath, List<MeasureRecord> records, Action<string>? log)
+        private static void ProcessRImage(Mat image, Mat originalImage, string fileName, FileNameInfo fileNameInfo, string resultImagePath, List<MeasureRecord> records, double micronScale, Action<string>? log)
         {
             PipelineResult result = RPMD.Instance.Process(image);
 
-            using (Mat output = GetROutputImage(image, result))
+            using (Mat output = GetROutputImage(originalImage, image, result))
             {
                 Cv2.ImWrite(resultImagePath, output);
             }
@@ -239,7 +378,7 @@ namespace LAY.Main
 
             foreach (RoiMeasurement measurement in result.Measurements)
             {
-                MeasureRecord record = MeasureRecord.CreateFromR(fileNameInfo, measurement);
+                MeasureRecord record = MeasureRecord.CreateFromR(fileNameInfo, measurement, micronScale);
                 records.Add(record);
             }
 
@@ -272,7 +411,9 @@ namespace LAY.Main
                 info.BatchNo = parts[2];
             }
 
-            if (parts.Length >= 4)
+            if (parts.Length >= 4 &&
+                (string.Equals(parts[parts.Length - 1], "B", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(parts[parts.Length - 1], "R", StringComparison.OrdinalIgnoreCase)))
             {
                 info.PipelineCode = parts[parts.Length - 1];
             }
@@ -280,27 +421,57 @@ namespace LAY.Main
             return info;
         }
 
-        private static Mat GetBOutputImage(Mat sourceImage, PinglineResult result)
+        private static Mat GetBOutputImage(Mat originalImage, Mat pipelineInputImage, PinglineResult result)
         {
             if (result.OutputImage.Empty())
             {
-                return sourceImage.Clone();
+                return originalImage.Clone();
             }
 
-            return result.OutputImage;
+            return ApplyPipelineOverlayToOriginal(originalImage, pipelineInputImage, result.OutputImage);
         }
 
-        private static Mat GetROutputImage(Mat sourceImage, PipelineResult result)
+        private static Mat GetROutputImage(Mat originalImage, Mat pipelineInputImage, PipelineResult result)
         {
             if (result.FullOverlay != null && !result.FullOverlay.Empty())
             {
-                return result.FullOverlay.Clone();
+                return ApplyPipelineOverlayToOriginal(originalImage, pipelineInputImage, result.FullOverlay);
             }
 
-            return sourceImage.Clone();
+            return originalImage.Clone();
         }
 
-        private static void WriteXlsx(string xlsxPath, IReadOnlyList<MeasureRecord> records)
+        private static Mat ApplyPipelineOverlayToOriginal(Mat originalImage, Mat pipelineInputImage, Mat pipelineOutputImage)
+        {
+            if (originalImage.Empty())
+            {
+                return pipelineOutputImage.Clone();
+            }
+
+            if (pipelineInputImage.Empty() ||
+                pipelineOutputImage.Empty() ||
+                originalImage.Size() != pipelineInputImage.Size() ||
+                originalImage.Size() != pipelineOutputImage.Size() ||
+                originalImage.Type() != pipelineInputImage.Type() ||
+                originalImage.Type() != pipelineOutputImage.Type())
+            {
+                return pipelineOutputImage.Clone();
+            }
+
+            Mat output = originalImage.Clone();
+
+            using Mat diff = new Mat();
+            using Mat grayDiff = new Mat();
+            using Mat overlayMask = new Mat();
+            Cv2.Absdiff(pipelineOutputImage, pipelineInputImage, diff);
+            Cv2.CvtColor(diff, grayDiff, ColorConversionCodes.BGR2GRAY);
+            Cv2.Threshold(grayDiff, overlayMask, 0, 255, ThresholdTypes.Binary);
+            pipelineOutputImage.CopyTo(output, overlayMask);
+
+            return output;
+        }
+
+        private static void WriteXlsx(string xlsxPath, IReadOnlyList<MeasureRecord> records, XlsxSheetType sheetType)
         {
             if (File.Exists(xlsxPath))
             {
@@ -313,7 +484,7 @@ namespace LAY.Main
                 AddTextEntry(archive, "_rels/.rels", BuildRootRelsXml());
                 AddTextEntry(archive, "xl/workbook.xml", BuildWorkbookXml());
                 AddTextEntry(archive, "xl/_rels/workbook.xml.rels", BuildWorkbookRelsXml());
-                AddTextEntry(archive, "xl/worksheets/sheet1.xml", BuildSheetXml(records));
+                AddTextEntry(archive, "xl/worksheets/sheet1.xml", BuildSheetXml(records, sheetType));
             }
         }
 
@@ -353,7 +524,57 @@ namespace LAY.Main
                    "</Relationships>";
         }
 
-        private static string BuildSheetXml(IReadOnlyList<MeasureRecord> records)
+        private static string BuildSheetXml(IReadOnlyList<MeasureRecord> records, XlsxSheetType sheetType)
+        {
+            if (sheetType == XlsxSheetType.Blt)
+            {
+                return BuildBltSheetXml(records);
+            }
+
+            return BuildRSheetXml(records);
+        }
+
+        private static string BuildBltSheetXml(IReadOnlyList<MeasureRecord> records)
+        {
+            StringBuilder builder = new StringBuilder();
+            builder.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+            builder.Append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">");
+            builder.Append("<cols>");
+            builder.Append("<col min=\"1\" max=\"3\" width=\"18\" customWidth=\"1\"/>");
+            builder.Append("<col min=\"4\" max=\"5\" width=\"14\" customWidth=\"1\"/>");
+            builder.Append("</cols>");
+            builder.Append("<sheetData>");
+
+            builder.Append("<row r=\"1\">");
+            AppendTextCell(builder, "A1", "日期");
+            AppendTextCell(builder, "B1", "机台号");
+            AppendTextCell(builder, "C1", "批次号");
+            AppendTextCell(builder, "D1", "最小值(微米)");
+            AppendTextCell(builder, "E1", "最大值(微米)");
+            builder.Append("</row>");
+
+            for (int index = 0; index < records.Count; index++)
+            {
+                int rowNumber = index + 2;
+                MeasureRecord record = records[index];
+
+                builder.Append("<row r=\"");
+                builder.Append(rowNumber.ToString(CultureInfo.InvariantCulture));
+                builder.Append("\">");
+                AppendTextCell(builder, "A" + rowNumber, record.DateText);
+                AppendTextCell(builder, "B" + rowNumber, record.MachineNo);
+                AppendTextCell(builder, "C" + rowNumber, record.BatchNo);
+                AppendNullableNumberCell(builder, "D" + rowNumber, record.LowestPoint);
+                AppendNullableNumberCell(builder, "E" + rowNumber, record.NormalPoint);
+                builder.Append("</row>");
+            }
+
+            builder.Append("</sheetData>");
+            builder.Append("</worksheet>");
+            return builder.ToString();
+        }
+
+        private static string BuildRSheetXml(IReadOnlyList<MeasureRecord> records)
         {
             StringBuilder builder = new StringBuilder();
             builder.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
@@ -368,10 +589,10 @@ namespace LAY.Main
             AppendTextCell(builder, "A1", "日期");
             AppendTextCell(builder, "B1", "机台号");
             AppendTextCell(builder, "C1", "批次号");
-            AppendTextCell(builder, "D1", "最低点");
-            AppendTextCell(builder, "E1", "正常点");
-            AppendTextCell(builder, "F1", "焊球厚度");
-            AppendTextCell(builder, "G1", "焊球大小");
+            AppendTextCell(builder, "D1", "最低点(微米)");
+            AppendTextCell(builder, "E1", "正常点(微米)");
+            AppendTextCell(builder, "F1", "焊球厚度(微米)");
+            AppendTextCell(builder, "G1", "焊球大小(微米)");
             builder.Append("</row>");
 
             for (int index = 0; index < records.Count; index++)
@@ -453,10 +674,17 @@ namespace LAY.Main
         }
     }
 
+    internal enum XlsxSheetType
+    {
+        Blt,
+        R
+    }
+
     internal class SysmainProcessResult
     {
         public string ResultFolderPath { get; set; } = string.Empty;
         public string XlsxPath { get; set; } = string.Empty;
+        public IReadOnlyList<string> XlsxPaths { get; set; } = new List<string>();
         public IReadOnlyList<MeasureRecord> Records { get; set; } = new List<MeasureRecord>();
     }
 
@@ -478,31 +706,46 @@ namespace LAY.Main
         public double? SolderBallThickness { get; set; }
         public double? SolderBallSize { get; set; }
 
-        public static MeasureRecord CreateFromB(FileNameInfo fileNameInfo, Measurement measurement)
+        public static MeasureRecord CreateFromB(FileNameInfo fileNameInfo, Measurement measurement, double micronScale)
         {
             int leftHeight = measurement.Left.Height;
             int rightHeight = measurement.Right.Height;
 
             MeasureRecord record = CreateBase(fileNameInfo);
-            record.LowestPoint = Math.Min(leftHeight, rightHeight);
-            record.NormalPoint = Math.Max(leftHeight, rightHeight);
+            record.LowestPoint = ScaleValue(Math.Min(leftHeight, rightHeight), micronScale);
+            record.NormalPoint = ScaleValue(Math.Max(leftHeight, rightHeight), micronScale);
             return record;
         }
 
-        public static MeasureRecord CreateFromR(FileNameInfo fileNameInfo, RoiMeasurement measurement)
+        public static MeasureRecord CreateFromR(FileNameInfo fileNameInfo, RoiMeasurement measurement, double micronScale)
         {
             MeasureRecord record = CreateBase(fileNameInfo);
-            record.LowestPoint = measurement.LowestRedTopHeight;
-            record.NormalPoint = measurement.LeftSmoothHeight;
+            record.LowestPoint = ScaleValue(measurement.LowestRedTopHeight, micronScale);
+            record.NormalPoint = ScaleValue(measurement.LeftSmoothHeight, micronScale);
 
             if (!record.NormalPoint.HasValue)
             {
-                record.NormalPoint = measurement.RightSmoothHeight;
+                record.NormalPoint = ScaleValue(measurement.RightSmoothHeight, micronScale);
             }
 
-            record.SolderBallThickness = measurement.H1;
-            record.SolderBallSize = measurement.H2;
+            record.SolderBallThickness = ScaleValue(measurement.H1, micronScale);
+            record.SolderBallSize = ScaleValue(measurement.H2, micronScale);
             return record;
+        }
+
+        private static double ScaleValue(double value, double micronScale)
+        {
+            return value * micronScale;
+        }
+
+        private static double? ScaleValue(double? value, double micronScale)
+        {
+            if (!value.HasValue)
+            {
+                return null;
+            }
+
+            return value.Value * micronScale;
         }
 
         private static MeasureRecord CreateBase(FileNameInfo fileNameInfo)
