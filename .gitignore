@@ -1,0 +1,39 @@
+# Visual Studio local files
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+bin/
+obj/
+x64/
+x86/
+Debug/
+Release/
+*_wpftmp.csproj
+
+# Model and runtime binary files
+*.onnx
+*.engine
+*.dll
+*.pdb
+*.so
+*.dylib
+*.lib
+*.exe
+
+# Runtime result files
+Result/
+**/Result/
+measure_results.xlsx
+
+# Logs and temporary files
+*.log
+*.tmp
+*.cache
+
+# OS files
+Thumbs.db
+Desktop.ini
