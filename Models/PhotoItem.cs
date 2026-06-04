@@ -15,5 +15,7 @@ namespace LAY.Models
 
         // 界面列表中显示的文件名。
         public string FileName { get; private set; }
+
+        public bool HasProblem { get; set; }
     }
 }

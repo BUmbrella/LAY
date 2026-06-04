@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.IO.Compression;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Xml.Linq;
 using LAY.Main;
 using LAY.Models;
 using LAY.Services;
@@ -32,6 +34,7 @@ namespace LAY.ViewModels
 
         // 当前图片列表中被选中的图片对象。设置它时会同步刷新右侧预览图。
         private PhotoItem? _selectedPhoto;
+        private SysmainProcessResult? _lastProcessResult;
 
         // 右侧图片预览控件使用的图片源。这里保存的是已经加载到内存里的 BitmapImage。
         private ImageSource? _previewImage;
@@ -264,7 +267,8 @@ namespace LAY.ViewModels
                 Log("距离结果已保存：" + result.XlsxPath);
 
                 // 检测完成后，自动切换到 Result 文件夹，方便用户直接看结果图。
-                LoadPhotos(result.ResultFolderPath, result.ResultFolderPath);
+                _lastProcessResult = result;
+                LoadPhotos(result.ResultFolderPath, result.ResultFolderPath, true);
                 Log("检测完成。");
             }
             catch (Exception ex)
@@ -311,6 +315,7 @@ namespace LAY.ViewModels
                 return;
             }
 
+            ApplyProblemFlags(photos, resultFolderPath);
             ReplacePhotos(photos);
             CurrentFolderPath = resultFolderPath;
             SelectedPhoto = GetFirstPhoto();
@@ -321,9 +326,13 @@ namespace LAY.ViewModels
         }
 
         // 从指定文件夹读取图片，然后刷新界面列表、当前路径、选中图片和缩放比例。
-        private void LoadPhotos(string folderPath, string displayPath)
+        private void LoadPhotos(string folderPath, string displayPath, bool showProblemFlags = false)
         {
             IReadOnlyList<PhotoItem> photos = _photoFolderService.GetPhotos(folderPath);
+            if (showProblemFlags)
+            {
+                ApplyProblemFlags(photos, folderPath);
+            }
             ReplacePhotos(photos);
 
             CurrentFolderPath = displayPath;
@@ -333,6 +342,172 @@ namespace LAY.ViewModels
 
         // 判断当前是否有可检测的输入图片。
         // 启动检测前必须通过这个检查，否则 sysmain 没有有效输入。
+        private void ApplyProblemFlags(IReadOnlyList<PhotoItem> photos, string resultFolderPath)
+        {
+            HashSet<string> bProblemKeys = ReadProblemKeysFromXlsx(Path.Combine(resultFolderPath, "BLT_measure_results.xlsx"), 4, 5);
+            HashSet<string> rProblemKeys = ReadProblemKeysFromXlsx(Path.Combine(resultFolderPath, "R_measure_results.xlsx"), 4, 7);
+
+            foreach (PhotoItem photo in photos)
+            {
+                PhotoKey key = ParsePhotoKey(photo.FileName);
+                if (string.Equals(key.PipelineCode, "R", StringComparison.OrdinalIgnoreCase))
+                {
+                    photo.HasProblem = rProblemKeys.Contains(key.Value);
+                }
+                else
+                {
+                    photo.HasProblem = bProblemKeys.Contains(key.Value);
+                }
+            }
+        }
+
+        private static HashSet<string> ReadProblemKeysFromXlsx(string xlsxPath, int firstMeasureColumn, int lastMeasureColumn)
+        {
+            HashSet<string> problemKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (!File.Exists(xlsxPath))
+            {
+                return problemKeys;
+            }
+
+            using ZipArchive archive = ZipFile.OpenRead(xlsxPath);
+            ZipArchiveEntry? sheetEntry = archive.GetEntry("xl/worksheets/sheet1.xml");
+            if (sheetEntry == null)
+            {
+                return problemKeys;
+            }
+
+            using Stream stream = sheetEntry.Open();
+            XDocument document = XDocument.Load(stream);
+            XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+
+            foreach (XElement row in document.Descendants(ns + "row"))
+            {
+                string rowIndexText = (string?)row.Attribute("r") ?? string.Empty;
+                if (!int.TryParse(rowIndexText, out int rowIndex) || rowIndex <= 1)
+                {
+                    continue;
+                }
+
+                Dictionary<string, string> cells = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (XElement cell in row.Elements(ns + "c"))
+                {
+                    string cellRef = (string?)cell.Attribute("r") ?? string.Empty;
+                    string columnName = GetColumnName(cellRef);
+                    if (columnName.Length > 0)
+                    {
+                        cells[columnName] = GetCellText(cell, ns);
+                    }
+                }
+
+                string key = BuildPhotoKey(GetCellValue(cells, "A"), GetCellValue(cells, "B"), GetCellValue(cells, "C"));
+                if (key.Length == 0)
+                {
+                    continue;
+                }
+
+                for (int column = firstMeasureColumn; column <= lastMeasureColumn; column++)
+                {
+                    string columnName = GetColumnName(column);
+                    if (string.IsNullOrWhiteSpace(GetCellValue(cells, columnName)))
+                    {
+                        problemKeys.Add(key);
+                        break;
+                    }
+                }
+            }
+
+            return problemKeys;
+        }
+
+        private static string GetCellText(XElement cell, XNamespace ns)
+        {
+            string type = (string?)cell.Attribute("t") ?? string.Empty;
+            if (string.Equals(type, "inlineStr", StringComparison.OrdinalIgnoreCase))
+            {
+                return (string?)cell.Element(ns + "is")?.Element(ns + "t") ?? string.Empty;
+            }
+
+            return (string?)cell.Element(ns + "v") ?? string.Empty;
+        }
+
+        private static string GetCellValue(Dictionary<string, string> cells, string columnName)
+        {
+            if (cells.TryGetValue(columnName, out string? value))
+            {
+                return value.Trim();
+            }
+
+            return string.Empty;
+        }
+
+        private static string GetColumnName(string cellReference)
+        {
+            int index = 0;
+            while (index < cellReference.Length && char.IsLetter(cellReference[index]))
+            {
+                index++;
+            }
+
+            return cellReference.Substring(0, index).ToUpperInvariant();
+        }
+
+        private static string GetColumnName(int columnNumber)
+        {
+            string columnName = string.Empty;
+            int number = columnNumber;
+            while (number > 0)
+            {
+                number--;
+                columnName = (char)('A' + number % 26) + columnName;
+                number /= 26;
+            }
+
+            return columnName;
+        }
+
+        private static PhotoKey ParsePhotoKey(string fileName)
+        {
+            string nameWithoutExtension = Path.GetFileNameWithoutExtension(fileName);
+            string[] parts = nameWithoutExtension.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+            string dateText = parts.Length >= 1 ? parts[0] : string.Empty;
+            string machineNo = parts.Length >= 2 ? parts[1] : string.Empty;
+            string batchNo = parts.Length >= 3 ? parts[2] : nameWithoutExtension;
+            string pipelineCode = "B";
+
+            if (parts.Length >= 4 &&
+                (string.Equals(parts[parts.Length - 1], "B", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(parts[parts.Length - 1], "R", StringComparison.OrdinalIgnoreCase)))
+            {
+                pipelineCode = parts[parts.Length - 1];
+            }
+
+            return new PhotoKey
+            {
+                PipelineCode = pipelineCode,
+                Value = BuildPhotoKey(dateText, machineNo, batchNo)
+            };
+        }
+
+        private static string BuildPhotoKey(string dateText, string machineNo, string batchNo)
+        {
+            if (string.IsNullOrWhiteSpace(dateText) &&
+                string.IsNullOrWhiteSpace(machineNo) &&
+                string.IsNullOrWhiteSpace(batchNo))
+            {
+                return string.Empty;
+            }
+
+            return dateText.Trim() + "\u001F" + machineNo.Trim() + "\u001F" + batchNo.Trim();
+        }
+
+        private struct PhotoKey
+        {
+            public string PipelineCode { get; set; }
+            public string Value { get; set; }
+        }
+
         private bool HasInputPhotos()
         {
             if (string.IsNullOrWhiteSpace(_sourceFolderPath))

@@ -34,7 +34,7 @@ namespace LAY.Pingline
 
         // R pipeline 的统一入口。
         // PipelineService.Run 返回 PipelineResult，里面有 Success、Error、FullOverlay、Measurements。
-        public PipelineResult Process(Mat image)
+        public PipelineResult Process( double x, Mat image)
         {
             if (image == null || image.Empty())
             {
@@ -44,7 +44,7 @@ namespace LAY.Pingline
                 return emptyResult;
             }
 
-            return _pipeline.Run(image);
+            return _pipeline.Run(x,image);
         }
     }
 }

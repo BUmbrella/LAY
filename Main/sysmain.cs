@@ -1,3 +1,4 @@
+﻿using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
@@ -25,6 +26,14 @@ namespace LAY.Main
         };
 
         private volatile bool _stopRequested;
+        /// <summary>
+        ///基础放大倍率
+        /// </summary>
+        public double BaseMagnification { get; set; } = 5.0;
+        /// <summary>
+        /// 基础像素大小
+        /// </summary>
+        public double BaseMicronScale { get; set; } = 0.9129;
 
         public void Stop()
         {
@@ -41,7 +50,8 @@ namespace LAY.Main
             }
             //读取倍数设置文件
             string magnification = GetMagnificationFromFolderName(inputFolderPath);
-            double micronScale = ReadMicronScale(magnification, log);
+
+            double micronScale = CalculateMicronScale(magnification, log);
             string resultFolderPath = Path.Combine(inputFolderPath, "Result");
             Directory.CreateDirectory(resultFolderPath);
 
@@ -53,6 +63,7 @@ namespace LAY.Main
 
             List<MeasureRecord> bRecords = new List<MeasureRecord>();
             List<MeasureRecord> rRecords = new List<MeasureRecord>();
+            HashSet<string> problemImageFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             string[] imagePaths = GetImagePaths(inputFolderPath);
 
             foreach (string imagePath in imagePaths)
@@ -63,7 +74,7 @@ namespace LAY.Main
                     break;
                 }
 
-                ProcessOneImage(imagePath, resultFolderPath, bRecords, rRecords, micronScale, log);
+                ProcessOneImage(imagePath, resultFolderPath, bRecords, rRecords, problemImageFileNames, micronScale, log);
             }
 
             List<string> xlsxPaths = new List<string>();
@@ -84,6 +95,7 @@ namespace LAY.Main
             result.XlsxPath = string.Join("; ", xlsxPaths);
             result.XlsxPaths = xlsxPaths;
             result.Records = bRecords.Concat(rRecords).ToList();
+            result.ProblemImageFileNames = problemImageFileNames.ToList();
             return result;
         }
 
@@ -154,69 +166,33 @@ namespace LAY.Main
 
             return text.Substring(start + 1, end - start);
         }
-
-        private static double ReadMicronScale(string magnification, Action<string>? log)
+        /// <summary>
+        /// 根据基准50倍的像素大小0.4555微米/px  计算其他倍率下的像素大小
+        /// </summary>
+        /// <param name="magnification"></param>
+        /// <param name="log"></param>
+        /// <returns></returns>
+        /// <exception cref="InvalidOperationException"></exception>
+        private double CalculateMicronScale(string magnification, Action<string>? log)
         {
-            string setPath = Path.Combine(AppContext.BaseDirectory, "set.txt");
-
-            if (!File.Exists(setPath))
+            if (!TryParseDouble(magnification, out double currentMagnification) || currentMagnification <= 0)
             {
-                throw new FileNotFoundException("set.txt not found: " + setPath, setPath);
+                throw new InvalidOperationException("放大倍数格式错误: " + magnification);
             }
 
-            string[] lines = File.ReadAllLines(setPath, Encoding.UTF8);
-            foreach (string line in lines)
+            if (BaseMagnification <= 0 || BaseMicronScale <= 0)
             {
-                string text = line.Trim();
-                if (text.Length == 0 || text.StartsWith("#"))
-                {
-                    continue;
-                }
-
-                string[] parts = SplitSettingLine(text);
-                if (parts.Length != 2)
-                {
-                    continue;
-                }
-
-                string key = parts[0].Trim();
-                string valueText = parts[1].Trim();
-                if (!string.Equals(key, magnification, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                if (TryParseDouble(valueText, out double scale))
-                {
-                    WriteLog(log, "Magnification " + magnification + " micron scale: " + scale.ToString("0.######", CultureInfo.InvariantCulture));
-                    return scale;
-                }
-
-                throw new InvalidOperationException("set.txt 参数格式错误: " + text);
+                throw new InvalidOperationException("基础倍数或基础系数必须大于 0");
             }
 
-            throw new InvalidOperationException("set.txt 中没有找到放大倍数 " + magnification + " 对应的参数");
+            double scale = BaseMicronScale * BaseMagnification / currentMagnification;
+            WriteLog(log, "Magnification " + magnification + " micron scale: " + scale.ToString("0.######", CultureInfo.InvariantCulture));
+            return scale;
         }
 
-        private static string[] SplitSettingLine(string text)
-        {
-            int separatorIndex = text.IndexOf(':');
-            if (separatorIndex < 0)
-            {
-                separatorIndex = text.IndexOf('\uFF1A');
-            }
+       
 
-            if (separatorIndex < 0)
-            {
-                return Array.Empty<string>();
-            }
-
-            return new[]
-            {
-                text.Substring(0, separatorIndex),
-                text.Substring(separatorIndex + 1)
-            };
-        }
+       
 
         private static bool TryParseDouble(string text, out double value)
         {
@@ -227,8 +203,16 @@ namespace LAY.Main
 
             return double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out value);
         }
-
-        private static void ProcessOneImage(string imagePath, string resultFolderPath, List<MeasureRecord> bRecords, List<MeasureRecord> rRecords, double micronScale, Action<string>? log)
+        /// <summary>
+        /// 进行检测
+        /// </summary>
+        /// <param name="imagePath"></param>
+        /// <param name="resultFolderPath"></param>
+        /// <param name="bRecords"></param>
+        /// <param name="rRecords"></param>
+        /// <param name="micronScale"></param>
+        /// <param name="log"></param>
+        private static void ProcessOneImage(string imagePath, string resultFolderPath, List<MeasureRecord> bRecords, List<MeasureRecord> rRecords, HashSet<string> problemImageFileNames, double micronScale, Action<string>? log)
         {
             string fileName = Path.GetFileName(imagePath);
             FileNameInfo fileNameInfo = ParseFileName(fileName);
@@ -246,12 +230,16 @@ namespace LAY.Main
                 using Mat cleanImage = RemoveColorText(image);
 
                 if (string.Equals(fileNameInfo.PipelineCode, "R", StringComparison.OrdinalIgnoreCase))
+
                 {//R
-                    ProcessRImage(cleanImage, image, fileName, fileNameInfo, resultImagePath, rRecords, micronScale, log);
+                    
+                    ProcessRImage(cleanImage, image, fileName, fileNameInfo, resultImagePath, rRecords, problemImageFileNames, micronScale, log);
+                    
+                    
                 }
                 else
                 {//B
-                    ProcessBImage(cleanImage, image, fileName, fileNameInfo, resultImagePath, bRecords, micronScale, log);
+                    ProcessBImage(cleanImage, image, fileName, fileNameInfo, resultImagePath, bRecords, problemImageFileNames, micronScale, log);
                 }
             }
         }
@@ -335,7 +323,7 @@ namespace LAY.Main
             return mask;
         }
 
-        private static void ProcessBImage(Mat image, Mat originalImage, string fileName, FileNameInfo fileNameInfo, string resultImagePath, List<MeasureRecord> records, double micronScale, Action<string>? log)
+        private static void ProcessBImage(Mat image, Mat originalImage, string fileName, FileNameInfo fileNameInfo, string resultImagePath, List<MeasureRecord> records, HashSet<string> problemImageFileNames, double micronScale, Action<string>? log)
         {
             PinglineResult result = BLT.Instance.Process(image, true, micronScale);
 
@@ -348,16 +336,21 @@ namespace LAY.Main
             {
                 MeasureRecord record = MeasureRecord.CreateFromB(fileNameInfo, result.Measurement.Value, micronScale);
                 records.Add(record);
+                if (IsBProblem(record))
+                {
+                    problemImageFileNames.Add(fileName);
+                }
                 WriteLog(log, fileName + " -> B OK");
                 return;
             }
 
+            problemImageFileNames.Add(fileName);
             WriteLog(log, fileName + " -> " + result.Message);
         }
 
-        private static void ProcessRImage(Mat image, Mat originalImage, string fileName, FileNameInfo fileNameInfo, string resultImagePath, List<MeasureRecord> records, double micronScale, Action<string>? log)
+        private static void ProcessRImage(Mat image, Mat originalImage, string fileName, FileNameInfo fileNameInfo, string resultImagePath, List<MeasureRecord> records, HashSet<string> problemImageFileNames, double micronScale, Action<string>? log)
         {
-            PipelineResult result = RPMD.Instance.Process(image);
+            PipelineResult result = RPMD.Instance.Process(micronScale, image);
 
             using (Mat output = GetROutputImage(originalImage, image, result))
             {
@@ -366,23 +359,42 @@ namespace LAY.Main
 
             if (!result.Success)
             {
+                problemImageFileNames.Add(fileName);
                 WriteLog(log, fileName + " -> " + result.Error);
                 return;
             }
 
             if (result.Measurements == null || result.Measurements.Count == 0)
             {
+                problemImageFileNames.Add(fileName);
                 WriteLog(log, fileName + " -> R OK，但是没有 Measurements，未写入 xlsx。");
                 return;
             }
 
             foreach (RoiMeasurement measurement in result.Measurements)
             {
-                MeasureRecord record = MeasureRecord.CreateFromR(fileNameInfo, measurement, micronScale);
+                MeasureRecord record = MeasureRecord.CreateFromR(fileNameInfo, measurement);
                 records.Add(record);
+                if (IsRProblem(record))
+                {
+                    problemImageFileNames.Add(fileName);
+                }
             }
 
             WriteLog(log, fileName + " -> R OK，写入 " + result.Measurements.Count + " 条记录。");
+        }
+
+        private static bool IsBProblem(MeasureRecord record)
+        {
+            return !record.LowestPoint.HasValue || !record.NormalPoint.HasValue;
+        }
+
+        private static bool IsRProblem(MeasureRecord record)
+        {
+            return !record.LowestPoint.HasValue ||
+                   !record.NormalPoint.HasValue ||
+                   !record.SolderBallThickness.HasValue ||
+                   !record.SolderBallSize.HasValue;
         }
 
         private static FileNameInfo ParseFileName(string fileName)
@@ -391,6 +403,7 @@ namespace LAY.Main
             string[] parts = nameWithoutExtension.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
             FileNameInfo info = new FileNameInfo();
+            info.SourceFileName = fileName;
             info.DateText = string.Empty;
             info.MachineNo = string.Empty;
             info.BatchNo = nameWithoutExtension;
@@ -686,10 +699,12 @@ namespace LAY.Main
         public string XlsxPath { get; set; } = string.Empty;
         public IReadOnlyList<string> XlsxPaths { get; set; } = new List<string>();
         public IReadOnlyList<MeasureRecord> Records { get; set; } = new List<MeasureRecord>();
+        public IReadOnlyList<string> ProblemImageFileNames { get; set; } = new List<string>();
     }
 
     internal class FileNameInfo
     {
+        public string SourceFileName { get; set; } = string.Empty;
         public string DateText { get; set; } = string.Empty;
         public string MachineNo { get; set; } = string.Empty;
         public string BatchNo { get; set; } = string.Empty;
@@ -698,6 +713,8 @@ namespace LAY.Main
 
     internal class MeasureRecord
     {
+        public string SourceFileName { get; set; } = string.Empty;
+        public string PipelineCode { get; set; } = string.Empty;
         public string DateText { get; set; } = string.Empty;
         public string MachineNo { get; set; } = string.Empty;
         public string BatchNo { get; set; } = string.Empty;
@@ -717,7 +734,7 @@ namespace LAY.Main
             return record;
         }
 
-        public static MeasureRecord CreateFromR(FileNameInfo fileNameInfo, RoiMeasurement measurement, double micronScale)
+        public static MeasureRecord CreateFromR(FileNameInfo fileNameInfo, RoiMeasurement measurement, double micronScale=1)
         {
             MeasureRecord record = CreateBase(fileNameInfo);
             record.LowestPoint = ScaleValue(measurement.LowestRedTopHeight, micronScale);
@@ -751,6 +768,8 @@ namespace LAY.Main
         private static MeasureRecord CreateBase(FileNameInfo fileNameInfo)
         {
             MeasureRecord record = new MeasureRecord();
+            record.SourceFileName = fileNameInfo.SourceFileName;
+            record.PipelineCode = fileNameInfo.PipelineCode;
             record.DateText = fileNameInfo.DateText;
             record.MachineNo = fileNameInfo.MachineNo;
             record.BatchNo = fileNameInfo.BatchNo;
