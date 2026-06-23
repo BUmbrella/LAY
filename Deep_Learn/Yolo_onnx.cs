@@ -367,12 +367,12 @@ namespace YOLOv8
                     // 1. boxes 已经按 score 从高到低排序，所以先遇到的框更可信。
                     // 2. 保留当前最高分框。
                     // 3. 只在同类别框之间计算 IoU 并抑制重复框。
-                    // 、
+                    // 4. 不再写死 TYPE1/TYPE2，也不让某个类别天然压过另一个类别。
                     //
                     // 为什么只抑制同类别：标准目标检测 NMS 通常是 class-aware NMS。
                     // 例如同一位置可能既有“缺陷A”又有“缺陷B”的候选，类别不同不能简单互相删除；
                     // 是否跨类别互斥应该由业务规则决定，而不是由通用 NMS 默认处理。
-                    for (int i = 0; i < boxes.Count; i++)//BOX就是目标框
+                    for (int i = 0; i < boxes.Count; i++)
                     {
                         if (used[i])
                             continue;
