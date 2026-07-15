@@ -1,4 +1,4 @@
-<Window x:Class="LAY.Views.MainWindow"
+﻿<Window x:Class="LAY.Views.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -6,6 +6,7 @@
         xmlns:converters="clr-namespace:LAY.Converters"
         mc:Ignorable="d"
         Title="LAY 研磨测量"
+        Icon="/Resource/LYA_icon_256.png"
         Height="900"
         Width="1600"
         Background="#0F172A"
@@ -147,7 +148,7 @@
                         <ListBox ItemsSource="{Binding Logs}"
                                  BorderThickness="0"
                                  Background="Transparent"
-                                 ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                 ScrollViewer.VerticalScrollBarVisibility="Visible">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding}"
@@ -213,14 +214,14 @@
                 </Grid>
 
                 <Border Grid.Row="1"
-                        Background="#050816"
+                        Background="#0B1220"
                         BorderBrush="#23314F"
                         BorderThickness="1"
                         CornerRadius="18"
                         Padding="20">
                     <ScrollViewer x:Name="PreviewScrollViewer"
-                                  HorizontalScrollBarVisibility="Auto"
-                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Visible"
+                                  VerticalScrollBarVisibility="Visible"
                                   CanContentScroll="False"
                                   Cursor="SizeAll"
                                   PreviewMouseWheel="PreviewScrollViewer_PreviewMouseWheel"
@@ -351,12 +352,12 @@
                                 </Border>
                                 <DataTemplate.Triggers>
                                     <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
-                                        <Setter TargetName="PhotoItemBorder" Property="Background" Value="#172033" />
-                                        <Setter TargetName="PhotoItemBorder" Property="BorderBrush" Value="#334155" />
+                                        <Setter TargetName="PhotoItemBorder" Property="Background" Value="#EFF6FF" />
+                                        <Setter TargetName="PhotoItemBorder" Property="BorderBrush" Value="#93C5FD" />
                                     </DataTrigger>
                                     <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
-                                        <Setter TargetName="PhotoItemBorder" Property="Background" Value="#123A58" />
-                                        <Setter TargetName="PhotoItemBorder" Property="BorderBrush" Value="#38BDF8" />
+                                        <Setter TargetName="PhotoItemBorder" Property="Background" Value="#DBEAFE" />
+                                        <Setter TargetName="PhotoItemBorder" Property="BorderBrush" Value="#2563EB" />
                                         <Setter TargetName="SelectedBar" Property="Opacity" Value="1" />
                                     </DataTrigger>
                                 </DataTemplate.Triggers>
@@ -368,3 +369,10 @@
         </Border>
     </Grid>
 </Window>
+
+
+
+
+
+
+

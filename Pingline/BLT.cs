@@ -356,8 +356,8 @@ namespace LAY.Pingline
 
         private static void Draw(Mat image, Rect selectedBox, Rect roiRect, Measurement measurement, double micronScale)
         {
-            DrawLineMeasure(image, measurement.Left, "H1", micronScale);
-            DrawLineMeasure(image, measurement.Right, "H2", micronScale);
+            DrawLineMeasure(image, measurement.Left, "L", micronScale);
+            DrawLineMeasure(image, measurement.Right, "L", micronScale);
             DrawSummaryText(image, measurement, micronScale);
         }
 
@@ -402,24 +402,24 @@ namespace LAY.Pingline
             Point p1 = new Point(line.X, line.Y1);
             Point p2 = new Point(line.X, line.Y2);
 
-            Scalar green = new Scalar(0, 255, 0);
+            Scalar color = new Scalar(0, 0, 255);
             string text = label + "=" + FormatMicronValue(line.Height, micronScale) + "um";
             int baseline;
             Size textSize = Cv2.GetTextSize(text, HersheyFonts.HersheySimplex, 0.6, 2, out baseline);
             int textX = Math.Max(0, Math.Min(image.Width - textSize.Width, line.X - textSize.Width / 2));
             int textY = Math.Max(textSize.Height + 2, line.Y1 - 8);
+            //画线
+            Cv2.Line(image, p1, p2, color, 2);
 
-            Cv2.Line(image, p1, p2, green, 2);
-            
-            //Cv2.PutText(
-            //    image,
-            //    text,
-            //    new Point(textX, textY),
-            //    HersheyFonts.HersheySimplex,
-            //    4,
-            //    green,
-            //    4
-            //);
+            Cv2.PutText(
+                image,
+                text,
+                new Point(textX, textY),
+                HersheyFonts.HersheySimplex,
+                2,
+                color,
+                2
+            );
         }
 
         private static string FormatMicronValue(int pixelValue, double micronScale)

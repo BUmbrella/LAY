@@ -4,10 +4,12 @@ namespace LAY.Models
 {
     public class PhotoItem
     {
-        public PhotoItem(string fullPath)
+        public PhotoItem(string fullPath, string? displayName = null)
         {
             FullPath = fullPath;
-            FileName = Path.GetFileName(fullPath);
+            FileName = string.IsNullOrWhiteSpace(displayName)
+                ? Path.GetFileName(fullPath)
+                : displayName;
         }
 
         // 图片完整路径，用于读取和预览。

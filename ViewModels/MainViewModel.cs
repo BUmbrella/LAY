@@ -231,8 +231,37 @@ namespace LAY.ViewModels
                 return;
             }
 
+            // 换了输入文件夹后，上一轮检测结果已经不再属于当前输入。
+            // 必须清空，否则点击“查看结果”会继续打开上一个文件夹的结果目录。
+            _lastProcessResult = null;
             _sourceFolderPath = folderPath;
-            LoadPhotos(folderPath, folderPath);
+            LoadInputPhotos(folderPath);
+            IReadOnlyList<string> existingResultImages = sysmain.GetExistingResultImagePaths(folderPath);
+            if (existingResultImages.Count > 0)
+            {
+                bool outputImagesOnly = sysmain.IsOutputImagesOnlyFolder(folderPath);
+                string resultFolderPath = outputImagesOnly
+                    ? folderPath
+                    : Path.Combine(folderPath, "Result");
+                _lastProcessResult = new SysmainProcessResult
+                {
+                    ResultFolderPath = resultFolderPath,
+                    OutputImagesOnly = outputImagesOnly
+                };
+
+                Log("已发现已有检测结果：" + existingResultImages.Count);
+                if (PhotoItems.Count == 0)
+                {
+                    if (outputImagesOnly)
+                    {
+                        LoadCheckedPhotos(resultFolderPath);
+                    }
+                    else
+                    {
+                        LoadPhotos(resultFolderPath, resultFolderPath, true);
+                    }
+                }
+            }
             Log("已加载输入文件夹：" + folderPath);
             Log("图片数量：" + PhotoItems.Count);
         }
@@ -257,6 +286,7 @@ namespace LAY.ViewModels
             }
 
             IsRunning = true;
+            _lastProcessResult = null;
             Log("开始检测。");
 
             try
@@ -268,7 +298,14 @@ namespace LAY.ViewModels
 
                 // 检测完成后，自动切换到 Result 文件夹，方便用户直接看结果图。
                 _lastProcessResult = result;
-                LoadPhotos(result.ResultFolderPath, result.ResultFolderPath, true);
+                if (result.OutputImagesOnly)
+                {
+                    LoadCheckedPhotos(result.ResultFolderPath);
+                }
+                else
+                {
+                    LoadPhotos(result.ResultFolderPath, result.ResultFolderPath, true);
+                }
                 Log("检测完成。");
             }
             catch (Exception ex)
@@ -290,7 +327,7 @@ namespace LAY.ViewModels
                 return;
             }
 
-            LoadPhotos(_sourceFolderPath, _sourceFolderPath);
+            LoadInputPhotos(_sourceFolderPath);
 
             if (PhotoItems.Count == 0)
             {
@@ -308,7 +345,16 @@ namespace LAY.ViewModels
             }
 
             string resultFolderPath = Path.Combine(_sourceFolderPath, "Result");
-            IReadOnlyList<PhotoItem> photos = _photoFolderService.GetPhotos(resultFolderPath);
+            if (_lastProcessResult != null &&
+                !string.IsNullOrWhiteSpace(_lastProcessResult.ResultFolderPath) &&
+                Directory.Exists(_lastProcessResult.ResultFolderPath))
+            {
+                resultFolderPath = _lastProcessResult.ResultFolderPath;
+            }
+
+            IReadOnlyList<PhotoItem> photos = _lastProcessResult?.OutputImagesOnly == true
+                ? BuildPhotoItems(sysmain.GetCheckedImagePaths(resultFolderPath), resultFolderPath)
+                : _photoFolderService.GetPhotos(resultFolderPath);
             if (photos.Count == 0)
             {
                 ShowPrompt("请先进行检测");
@@ -340,8 +386,39 @@ namespace LAY.ViewModels
             SetZoom(1.0);
         }
 
+        private void LoadInputPhotos(string folderPath)
+        {
+            IReadOnlyList<PhotoItem> photos = BuildPhotoItems(sysmain.GetProcessableImagePaths(folderPath), folderPath);
+
+            ReplacePhotos(photos);
+            CurrentFolderPath = folderPath;
+            SelectedPhoto = GetFirstPhoto();
+            SetZoom(1.0);
+        }
+
         // 判断当前是否有可检测的输入图片。
         // 启动检测前必须通过这个检查，否则 sysmain 没有有效输入。
+        private void LoadCheckedPhotos(string folderPath)
+        {
+            IReadOnlyList<PhotoItem> photos = BuildPhotoItems(sysmain.GetCheckedImagePaths(folderPath), folderPath);
+            ReplacePhotos(photos);
+            CurrentFolderPath = folderPath;
+            SelectedPhoto = GetFirstPhoto();
+            SetZoom(1.0);
+        }
+
+        private static IReadOnlyList<PhotoItem> BuildPhotoItems(IEnumerable<string> imagePaths, string rootFolderPath)
+        {
+            List<PhotoItem> photos = new List<PhotoItem>();
+            foreach (string imagePath in imagePaths)
+            {
+                string displayName = Path.GetRelativePath(rootFolderPath, imagePath);
+                photos.Add(new PhotoItem(imagePath, displayName));
+            }
+
+            return photos;
+        }
+
         private void ApplyProblemFlags(IReadOnlyList<PhotoItem> photos, string resultFolderPath)
         {
             HashSet<string> bProblemKeys = ReadProblemKeysFromXlsx(Path.Combine(resultFolderPath, "BLT_measure_results.xlsx"), 4, 5);
@@ -520,8 +597,7 @@ namespace LAY.ViewModels
                 return false;
             }
 
-            IReadOnlyList<PhotoItem> photos = _photoFolderService.GetPhotos(_sourceFolderPath);
-            return photos.Count > 0;
+            return sysmain.HasProcessablePhotos(_sourceFolderPath);
         }
 
         // 用新的图片列表替换界面当前列表。

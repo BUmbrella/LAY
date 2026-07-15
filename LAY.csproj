@@ -6,7 +6,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <ApplicationIcon>Resource\LYA_icon.ico</ApplicationIcon>
     <Platforms>AnyCPU;x64</Platforms>
+    <DefaultItemExcludes>$(DefaultItemExcludes);publish\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -19,13 +21,21 @@
 
   <ItemGroup>
     <None Remove="Resource\APS.png" />
-    <Reference Include="LAY.Project" Condition="'$(Platform)' == 'x64'">
+    <None Remove="Resource\LYA_logo.png" />
+    <None Remove="Resource\LYA_icon.ico" />
+    <None Remove="Resource\LYA_icon_256.png" />
+    <Reference Include="LAY.Project">
       <HintPath>bin\x64\Debug\net8.0-windows\onnx\LAY.Project.dll</HintPath>
-    </Reference>
-    <Reference Include="LAY.Project" Condition="'$(Platform)' != 'x64'">
-      <HintPath>bin\Debug\net8.0-windows\onnx\LAY.Project.dll</HintPath>
+      <Private>true</Private>
     </Reference>
     <Resource Include="Resource\APS.png" />
+    <Resource Include="Resource\LYA_logo.png" />
+    <Resource Include="Resource\LYA_icon.ico" />
+    <Resource Include="Resource\LYA_icon_256.png" />
   </ItemGroup>
 
 </Project>
+
+
+
+

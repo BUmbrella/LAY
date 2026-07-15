@@ -25,6 +25,42 @@ namespace LAY.Main
             ".webp"
         };
 
+        private enum FolderProcessMode
+        {
+            Legacy,
+            Gc,
+            Bf
+        }
+
+        private sealed class FolderProcessOptions
+        {
+            /// <summary>
+            /// 文件夹名中的放大倍数部分。
+            /// </summary>
+            public string Magnification { get; set; } = string.Empty;
+
+            /// <summary>
+            /// 当前文件夹使用的处理模式。
+            /// </summary>
+            public FolderProcessMode Mode { get; set; }
+
+            /// <summary>
+            /// 新模式中由文件夹名强制指定的流程类型。
+            /// </summary>
+            public string? ForcedPipelineCode { get; set; }
+
+            /// <summary>
+            /// 是否只输出结果图片。。
+            /// </summary>
+            public bool OutputImagesOnly
+            {
+                get
+                {
+                    return Mode != FolderProcessMode.Legacy;
+                }
+            }
+        }
+
         private volatile bool _stopRequested;
         /// <summary>
         ///基础放大倍率
@@ -42,60 +78,119 @@ namespace LAY.Main
 
         public SysmainProcessResult Start(string inputFolderPath, Action<string>? log = null)
         {
+            // 每次点击“启动”都重新开始一轮检测。
+            // 上一次如果点过“停止”，这里必须先把停止标记清掉，否则新一轮会直接退出。
             _stopRequested = false;
 
+            // 输入必须是一个真实存在的文件夹。
+            // 后续所有规则解析、图片查找、结果保存都依赖这个根目录。
             if (string.IsNullOrWhiteSpace(inputFolderPath) || !Directory.Exists(inputFolderPath))
             {
                 throw new DirectoryNotFoundException("Input folder not found: " + inputFolderPath);
             }
-            //读取倍数设置文件
-            string magnification = GetMagnificationFromFolderName(inputFolderPath);
 
+            // 解析文件夹名称中的处理规则。
+            // 支持两类：
+            // 1. 旧规则：文件夹名只有倍数，例如“50”。按图片文件名自动判断 B/R，输出到 Result，并写 Excel。
+            // 2. 新规则：例如“50-R-GC”“50-B-GC”“50-BLT-GC”“50-R-BF”“50-B-BF”。
+            //    - 第一段是倍数。
+            //    - 第二段强制指定流程：R、B 或 BLT；BLT 会按 B 流程处理。
+            //    - 第三段指定模式：GC 或 BF。
+            FolderProcessOptions options = ParseFolderProcessOptions(inputFolderPath);
+
+            // 放大倍数只取规则中的第一段数字。
+            // 例如“50-R-GC”最终使用 50 计算像素到微米的换算系数。
+            string magnification = options.Magnification;
+
+            // 根据当前倍数计算微米/像素系数。
+            // 后面的 B/R pipeline 都使用同一个 micronScale，保证新旧模式测量单位一致。
             double micronScale = CalculateMicronScale(magnification, log);
-            string resultFolderPath = Path.Combine(inputFolderPath, "Result");
-            Directory.CreateDirectory(resultFolderPath);
 
+            // 旧模式会把结果统一放到 inputFolderPath\Result。
+            // GC/BF 新模式只保存 Checked 图片，不生成 Excel，也不创建 Result 文件夹。
+            // 新模式的结果图会保存到原图所在目录，这样子文件夹里的 BF 图片也留在自己的文件夹中。
+            string resultFolderPath = options.OutputImagesOnly ? inputFolderPath : Path.Combine(inputFolderPath, "Result");
+            if (!options.OutputImagesOnly)
+            {
+                Directory.CreateDirectory(resultFolderPath);
+            }
+
+            // Excel 只服务旧模式。
+            // 新模式虽然也计算 bXlsxPath/rXlsxPath，后面不会删除旧表，也不会写新表。
             string bXlsxPath = Path.Combine(resultFolderPath, "BLT_measure_results.xlsx");
             string rXlsxPath = Path.Combine(resultFolderPath, "R_measure_results.xlsx");
-            DeleteExistingResultFile(Path.Combine(resultFolderPath, "measure_results.xlsx"));
-            DeleteExistingResultFile(bXlsxPath);
-            DeleteExistingResultFile(rXlsxPath);
 
+            // 旧模式每次重新检测时清理旧 Excel，避免新旧数据混在一起。
+            // GC/BF 新模式不动 Excel，因为需求是“只保存一个结果图像”。
+            if (!options.OutputImagesOnly)
+            {
+                DeleteExistingResultFile(Path.Combine(resultFolderPath, "measure_results.xlsx"));
+                DeleteExistingResultFile(bXlsxPath);
+                DeleteExistingResultFile(rXlsxPath);
+            }
+
+            // B/R 测量记录集合。
+            // 旧模式检测完成后会写入对应 Excel。
+            // 新模式不会写 Excel，但仍复用 ProcessBImage/ProcessRImage，所以这里继续传入集合。
             List<MeasureRecord> bRecords = new List<MeasureRecord>();
             List<MeasureRecord> rRecords = new List<MeasureRecord>();
+
+            // 记录有问题的图片名称。
+            // 旧模式界面会根据 Excel 空值标红；这里保留这个集合用于返回过程结果。
             HashSet<string> problemImageFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            string[] imagePaths = GetImagePaths(inputFolderPath);
+
+            // 按文件夹规则获取待检测图片：
+            // - 旧模式：只取当前根目录图片。
+            // - GC / BF：只递归扫描子目录，所有图片都按文件夹名指定的 R/B 流程处理。
+            //   直接放在拖入根目录下的图片不显示、不检测。
+            // 同时会跳过 Result 文件夹和已经带 -Checked 后缀的图片。
+            string[] imagePaths = GetImagePaths(inputFolderPath, options);
 
             foreach (string imagePath in imagePaths)
             {
+                // 停止按钮只是设置 _stopRequested。
+                // 真正停止发生在处理下一张图片之前，因此不会打断正在处理中的图片。
                 if (_stopRequested)
                 {
                     WriteLog(log, "Stop requested.");
                     break;
                 }
 
-                ProcessOneImage(imagePath, resultFolderPath, bRecords, rRecords, problemImageFileNames, micronScale, log);
+                // 处理单张图片。
+                // 旧模式：按文件名解析 B/R，并把结果图写到 Result 文件夹。
+                // GC/BF：强制使用文件夹规则指定的 B/R 流程，并生成 -Checked 结果图。
+                ProcessOneImage(imagePath, resultFolderPath, bRecords, rRecords, problemImageFileNames, micronScale, log, options);
             }
 
+            // 保存本轮生成的 Excel 路径。
+            // 新模式不写 Excel，所以这个列表会保持为空。
             List<string> xlsxPaths = new List<string>();
-            if (bRecords.Count > 0)
+
+            // 旧模式：如果有 B 流程记录，写 BLT_measure_results.xlsx。
+            if (!options.OutputImagesOnly && bRecords.Count > 0)
             {
                 WriteXlsx(bXlsxPath, bRecords, XlsxSheetType.Blt);
                 xlsxPaths.Add(bXlsxPath);
             }
 
-            if (rRecords.Count > 0)
+            // 旧模式：如果有 R 流程记录，写 R_measure_results.xlsx。
+            if (!options.OutputImagesOnly && rRecords.Count > 0)
             {
                 WriteXlsx(rXlsxPath, rRecords, XlsxSheetType.R);
                 xlsxPaths.Add(rXlsxPath);
             }
 
+            // 把本轮处理结果返回给 ViewModel。
+            // ResultFolderPath：
+            // - 旧模式是 Result 文件夹，界面“查看结果”会切过去。
+            // - 新模式是根目录，界面会递归读取各目录下的 -Checked 图片。
             SysmainProcessResult result = new SysmainProcessResult();
             result.ResultFolderPath = resultFolderPath;
             result.XlsxPath = string.Join("; ", xlsxPaths);
             result.XlsxPaths = xlsxPaths;
             result.Records = bRecords.Concat(rRecords).ToList();
             result.ProblemImageFileNames = problemImageFileNames.ToList();
+            result.OutputImagesOnly = options.OutputImagesOnly;
             return result;
         }
 
@@ -107,11 +202,124 @@ namespace LAY.Main
             }
         }
 
-        private static string[] GetImagePaths(string inputFolderPath)
+        private static string[] GetImagePaths(string inputFolderPath, FolderProcessOptions options)
         {
             List<string> imagePaths = new List<string>();
-            string[] allFiles = Directory.GetFiles(inputFolderPath, "*.*", SearchOption.TopDirectoryOnly);
 
+            // 旧模式只扫描根目录，保持原来的检测方式。
+            // GC / BF 新模式递归扫描子目录，但跳过直接放在根目录下的图片。
+            SearchOption searchOption = options.OutputImagesOnly ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+            string[] allFiles = Directory.GetFiles(inputFolderPath, "*.*", searchOption);
+
+            foreach (string filePath in allFiles)
+            {
+                string extension = Path.GetExtension(filePath);
+
+                // 只处理支持的图片格式。
+                // 同时跳过已经生成过的 -Checked 图片，避免下一次检测把结果图再次当作输入。
+                // Result 文件夹也跳过，避免旧模式输出结果被再次处理。
+                if (!SupportedExtensions.Contains(extension) ||
+                    IsCheckedImage(filePath) ||
+                    IsInResultFolder(inputFolderPath, filePath) ||
+                    HasExistingResultImage(inputFolderPath, filePath, options) ||
+                    (options.OutputImagesOnly && IsDirectlyInFolder(inputFolderPath, filePath)))
+                {
+                    continue;
+                }
+
+                imagePaths.Add(filePath);
+            }
+
+            imagePaths.Sort(delegate (string left, string right)
+            {
+                string leftRelative = Path.GetRelativePath(inputFolderPath, left);
+                string rightRelative = Path.GetRelativePath(inputFolderPath, right);
+                return string.Compare(leftRelative, rightRelative, StringComparison.OrdinalIgnoreCase);
+            });
+
+            return imagePaths.ToArray();
+        }
+        //进行文件夹名字类型判断
+        public static bool TryGetMagnificationFromFolderName(string folderPath, out string magnification)
+        {
+            magnification = ParseFolderProcessOptions(folderPath).Magnification;
+            return magnification.Length > 0;
+        }
+
+        public static bool HasProcessablePhotos(string folderPath)
+        {
+            if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+            {
+                return false;
+            }
+
+            FolderProcessOptions options = ParseFolderProcessOptions(folderPath);
+            return GetImagePaths(folderPath, options).Length > 0;
+        }
+
+        public static IReadOnlyList<string> GetProcessableImagePaths(string folderPath)
+        {
+            if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+            {
+                return Array.Empty<string>();
+            }
+
+            FolderProcessOptions options = ParseFolderProcessOptions(folderPath);
+            return GetImagePaths(folderPath, options);
+        }
+
+        public static IReadOnlyList<string> GetCheckedImagePaths(string folderPath)
+        {
+            List<string> imagePaths = new List<string>();
+
+            if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+            {
+                return imagePaths;
+            }
+
+            string[] allFiles = Directory.GetFiles(folderPath, "*.*", SearchOption.AllDirectories);
+            foreach (string filePath in allFiles)
+            {
+                string extension = Path.GetExtension(filePath);
+                if (SupportedExtensions.Contains(extension) &&
+                    IsCheckedImage(filePath) &&
+                    !IsDirectlyInFolder(folderPath, filePath))
+                {
+                    imagePaths.Add(filePath);
+                }
+            }
+
+            imagePaths.Sort(delegate (string left, string right)
+            {
+                string leftRelative = Path.GetRelativePath(folderPath, left);
+                string rightRelative = Path.GetRelativePath(folderPath, right);
+                return string.Compare(leftRelative, rightRelative, StringComparison.OrdinalIgnoreCase);
+            });
+
+            return imagePaths;
+        }
+
+        public static IReadOnlyList<string> GetExistingResultImagePaths(string folderPath)
+        {
+            if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+            {
+                return Array.Empty<string>();
+            }
+
+            FolderProcessOptions options = ParseFolderProcessOptions(folderPath);
+            if (options.OutputImagesOnly)
+            {
+                return GetCheckedImagePaths(folderPath);
+            }
+
+            string resultFolderPath = Path.Combine(folderPath, "Result");
+            if (!Directory.Exists(resultFolderPath))
+            {
+                return Array.Empty<string>();
+            }
+
+            List<string> imagePaths = new List<string>();
+            string[] allFiles = Directory.GetFiles(resultFolderPath, "*.*", SearchOption.TopDirectoryOnly);
             foreach (string filePath in allFiles)
             {
                 string extension = Path.GetExtension(filePath);
@@ -126,23 +334,128 @@ namespace LAY.Main
                 return string.Compare(Path.GetFileName(left), Path.GetFileName(right), StringComparison.OrdinalIgnoreCase);
             });
 
-            return imagePaths.ToArray();
+            return imagePaths;
         }
 
-        public static bool TryGetMagnificationFromFolderName(string folderPath, out string magnification)
+        public static bool IsOutputImagesOnlyFolder(string folderPath)
         {
-            magnification = GetTrailingDigits(new DirectoryInfo(folderPath).Name);
-            return magnification.Length > 0;
+            if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+            {
+                return false;
+            }
+
+            return ParseFolderProcessOptions(folderPath).OutputImagesOnly;
         }
 
         private static string GetMagnificationFromFolderName(string inputFolderPath)
         {
-            if (TryGetMagnificationFromFolderName(inputFolderPath, out string magnification))
+            string magnification = ParseFolderProcessOptions(inputFolderPath).Magnification;
+            if (magnification.Length > 0)
             {
                 return magnification;
             }
 
             throw new InvalidOperationException("请修改文件夹名字，提供放大倍数");
+        }
+
+        private static FolderProcessOptions ParseFolderProcessOptions(string folderPath)
+        {
+            string folderName = new DirectoryInfo(folderPath).Name.Trim();
+            string[] parts = folderName.Split('-', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            if (parts.Length == 1)
+            {
+                return new FolderProcessOptions
+                {
+                    Magnification = GetTrailingDigits(folderName),
+                    Mode = FolderProcessMode.Legacy
+                };
+            }
+
+            if (parts.Length == 3 &&
+                TryParsePipelineCode(parts[1], out string pipelineCode) &&
+                TryParseFolderMode(parts[2], out FolderProcessMode mode))
+            {
+                return new FolderProcessOptions
+                {
+                    Magnification = parts[0],
+                    Mode = mode,
+                    ForcedPipelineCode = pipelineCode
+                };
+            }
+
+            return new FolderProcessOptions
+            {
+                Magnification = GetTrailingDigits(folderName),
+                Mode = FolderProcessMode.Legacy
+            };
+        }
+
+        private static bool TryParsePipelineCode(string text, out string pipelineCode)
+        {
+            pipelineCode = string.Empty;
+            if (string.Equals(text, "R", StringComparison.OrdinalIgnoreCase))
+            {
+                pipelineCode = "R";
+                return true;
+            }
+
+            if (string.Equals(text, "B", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(text, "BLT", StringComparison.OrdinalIgnoreCase))
+            {
+                pipelineCode = "B";
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryParseFolderMode(string text, out FolderProcessMode mode)
+        {
+            if (string.Equals(text, "GC", StringComparison.OrdinalIgnoreCase))
+            {
+                mode = FolderProcessMode.Gc;
+                return true;
+            }
+
+            if (string.Equals(text, "BF", StringComparison.OrdinalIgnoreCase))
+            {
+                mode = FolderProcessMode.Bf;
+                return true;
+            }
+
+            mode = FolderProcessMode.Legacy;
+            return false;
+        }
+
+        private static bool IsCheckedImage(string filePath)
+        {
+            string name = Path.GetFileNameWithoutExtension(filePath);
+            return name.EndsWith("-Checked", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsInResultFolder(string inputFolderPath, string filePath)
+        {
+            string relativePath = Path.GetRelativePath(inputFolderPath, filePath);
+            string[] parts = relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return parts.Any(part => string.Equals(part, "Result", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsDirectlyInFolder(string folderPath, string filePath)
+        {
+            string? fileFolderPath = Path.GetDirectoryName(filePath);
+            return string.Equals(fileFolderPath, folderPath, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool FileNameContainsPipelineCode(string filePath, string? pipelineCode)
+        {
+            if (string.IsNullOrWhiteSpace(pipelineCode))
+            {
+                return true;
+            }
+
+            string name = Path.GetFileNameWithoutExtension(filePath);
+            return name.IndexOf(pipelineCode, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static string GetTrailingDigits(string text)
@@ -212,11 +525,16 @@ namespace LAY.Main
         /// <param name="rRecords"></param>
         /// <param name="micronScale"></param>
         /// <param name="log"></param>
-        private static void ProcessOneImage(string imagePath, string resultFolderPath, List<MeasureRecord> bRecords, List<MeasureRecord> rRecords, HashSet<string> problemImageFileNames, double micronScale, Action<string>? log)
+        private static void ProcessOneImage(string imagePath, string resultFolderPath, List<MeasureRecord> bRecords, List<MeasureRecord> rRecords, HashSet<string> problemImageFileNames, double micronScale, Action<string>? log, FolderProcessOptions options)
         {
             string fileName = Path.GetFileName(imagePath);
             FileNameInfo fileNameInfo = ParseFileName(fileName);
-            string resultImagePath = Path.Combine(resultFolderPath, fileName);
+            if (!string.IsNullOrWhiteSpace(options.ForcedPipelineCode))
+            {
+                fileNameInfo.PipelineCode = options.ForcedPipelineCode;
+            }
+
+            string resultImagePath = GetResultImagePath(imagePath, resultFolderPath, options);
 
             using (Mat image = Cv2.ImRead(imagePath, ImreadModes.Color))
             {
@@ -242,6 +560,40 @@ namespace LAY.Main
                     ProcessBImage(cleanImage, image, fileName, fileNameInfo, resultImagePath, bRecords, problemImageFileNames, micronScale, log);
                 }
             }
+        }
+
+        private static string GetResultImagePath(string imagePath, string resultFolderPath, FolderProcessOptions options)
+        {
+            string fileName = Path.GetFileName(imagePath);
+            if (!options.OutputImagesOnly)
+            {
+                return Path.Combine(resultFolderPath, fileName);
+            }
+
+            string checkedFileName = BuildCheckedFileName(fileName);
+            string? imageFolderPath = Path.GetDirectoryName(imagePath);
+            if (!string.IsNullOrWhiteSpace(imageFolderPath))
+            {
+                return Path.Combine(imageFolderPath, checkedFileName);
+            }
+
+            return Path.Combine(resultFolderPath, checkedFileName);
+        }
+
+        private static bool HasExistingResultImage(string inputFolderPath, string imagePath, FolderProcessOptions options)
+        {
+            string resultFolderPath = options.OutputImagesOnly
+                ? inputFolderPath
+                : Path.Combine(inputFolderPath, "Result");
+            string resultImagePath = GetResultImagePath(imagePath, resultFolderPath, options);
+            return File.Exists(resultImagePath);
+        }
+
+        private static string BuildCheckedFileName(string fileName)
+        {
+            string extension = Path.GetExtension(fileName);
+            string nameWithoutExtension = Path.GetFileNameWithoutExtension(fileName);
+            return nameWithoutExtension + "-Checked" + extension;
         }
 
         // 去掉图片上叠加的彩色字符。
@@ -700,6 +1052,7 @@ namespace LAY.Main
         public IReadOnlyList<string> XlsxPaths { get; set; } = new List<string>();
         public IReadOnlyList<MeasureRecord> Records { get; set; } = new List<MeasureRecord>();
         public IReadOnlyList<string> ProblemImageFileNames { get; set; } = new List<string>();
+        public bool OutputImagesOnly { get; set; }
     }
 
     internal class FileNameInfo
